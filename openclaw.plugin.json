@@ -1,0 +1,31 @@
+{
+  "id": "p2p-portal",
+  "name": "Agent P2P Portal",
+  "description": "WebSocket connection to P2P Portal for agent-to-agent messaging",
+  "version": "0.2.0",
+  "specifier": "./index.js",
+  "exportName": "default",
+  "channels": [
+    "p2p-portal"
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "hubUrl": {
+        "type": "string",
+        "description": "Portal URL",
+        "default": "https://agentportalp2p.com"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Agent P2P API Key",
+        "secret": true
+      },
+      "gatewayUrl": {
+        "type": "string",
+        "description": "OpenClaw Gateway URL",
+        "default": "http://127.0.0.1:18789"
+      }
+    }
+  }
+}
