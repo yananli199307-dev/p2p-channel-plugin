@@ -14,7 +14,7 @@
       "hubUrl": {
         "type": "string",
         "description": "Portal URL",
-        "default": "https://agentportalp2p.com"
+        "default": "<your-portal-domain.com>"
       },
       "apiKey": {
         "type": "string",

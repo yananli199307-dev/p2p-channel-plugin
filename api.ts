@@ -9,7 +9,7 @@ import http from 'http';
 
 // 插件配置
 let config = {
-  hubUrl: 'https://agentportalp2p.com',
+  hubUrl: '<your-portal-domain.com>',
   apiKey: '',
   gatewayUrl: 'http://127.0.0.1:18789',
 };

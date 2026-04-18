@@ -65,7 +65,7 @@ function createAccount(cfg: OpenClawConfig, accountId: string): P2pPortalAccount
     accountId,
     enabled: channelConfig.enabled ?? true,
     configured: Boolean(channelConfig.apiKey),
-    hubUrl: channelConfig.hubUrl || 'https://agentportalp2p.com',
+    hubUrl: channelConfig.hubUrl || '<your-portal-domain.com>',
     apiKey: channelConfig.apiKey || '',
   };
 }
