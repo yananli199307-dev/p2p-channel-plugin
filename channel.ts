@@ -6,7 +6,11 @@ import https from 'https';
 let pluginRuntime: PluginRuntime | null = null;
 let runtimeWaiters: Array<(runtime: PluginRuntime) => void> = [];
 
+// 消息去重 Set
+const processedMessageIds = new Set<string>();
+
 export function setP2pPortalRuntime(runtime: PluginRuntime): void {
+  console.log('[p2p-portal] setP2pPortalRuntime called, runtime.channel:', typeof runtime?.channel);
   pluginRuntime = runtime;
   // 唤醒等待的 waiter
   while (runtimeWaiters.length > 0) {
@@ -71,6 +75,21 @@ function generateMessageSid(): string {
   return `p2p-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
+// 检查消息是否已处理（去重）
+function isMessageProcessed(msgId: string): boolean {
+  return processedMessageIds.has(msgId);
+}
+
+// 标记消息已处理
+function markMessageProcessed(msgId: string): void {
+  processedMessageIds.add(msgId);
+  // 清理旧消息，防止内存泄漏（保留最近 100 条）
+  if (processedMessageIds.size > 100) {
+    const first = processedMessageIds.values().next().value;
+    processedMessageIds.delete(first);
+  }
+}
+
 // 启动 WebSocket 连接
 function startConnection(
   account: P2pPortalAccount,
@@ -109,6 +128,16 @@ function startConnection(
         const message = JSON.parse(data.toString());
         ctx.log?.info?.(`[${account.accountId}] received: ${message.type}`);
         
+        // 处理 ping/pong 心跳
+        if (message.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }));
+          ctx.log?.info?.(`[${account.accountId}] sent: pong`);
+          return;
+        }
+        if (message.type === 'pong') {
+          return; // 收到 pong，无需处理
+        }
+        
         // 使用传入的 channelRuntime
         if (!channelRuntime) {
           ctx.log?.error?.(`[${account.accountId}] channelRuntime not available`);
@@ -117,6 +146,8 @@ function startConnection(
         await handleMessage(message, account, channelRuntime, {
           log: ctx.log,
           cfg: ctx.cfg,
+        }).catch((e: any) => {
+          ctx.log?.error?.(`[${account.accountId}] handleMessage error: ${e.message}`);
         });
         ctx.setStatus?.({ accountId: account.accountId, running: true, lastEventAt: Date.now() });
       } catch (e: any) {
@@ -128,12 +159,15 @@ function startConnection(
       ctx.log?.info?.(`[${account.accountId}] WebSocket closed`);
       runtime.ws = undefined;
       if (runtime.running) {
-        scheduleReconnect(account, runtime, ctx);
+        scheduleReconnect(account, runtime, channelRuntime, ctx);
       }
     });
 
     ws.on('error', (error: any) => {
       ctx.log?.error?.(`[${account.accountId}] WebSocket error: ${error.message}`);
+      // 关闭连接，触发重连
+      runtime.running = false;
+      ws.close();
     });
 
     ctx.abortSignal?.addEventListener('abort', () => {
@@ -143,7 +177,7 @@ function startConnection(
 
   } catch (error: any) {
     ctx.log?.error?.(`[${account.accountId}] connection failed: ${error.message}`);
-    scheduleReconnect(account, runtime, ctx);
+    scheduleReconnect(account, runtime, channelRuntime, ctx);
   }
 }
 
@@ -166,17 +200,39 @@ async function handleMessage(
     fromName = message.from_name || message.from || '未知';
     from = message.from || 'unknown';
     body = message.content || '';
+    // 检查是否已处理（去重）
+    const msgId = message.id || message.message_id || `${from}-${body}-${message.timestamp || Date.now()}`;
+    if (isMessageProcessed(msgId)) {
+      ctx.log?.info?.(`[${account.accountId}] duplicate message skipped: ${msgId}`);
+      return;
+    }
+    markMessageProcessed(msgId);
   } else if (msgType === 'owner_message') {
     from = 'owner';
     fromName = '主人';
     body = message.content || '';
+    // owner_message 也需要去重
+    const msgId = message.id || message.message_id || `owner-${body}-${message.timestamp || Date.now()}`;
+    if (isMessageProcessed(msgId)) {
+      ctx.log?.info?.(`[${account.accountId}] duplicate owner_message skipped: ${msgId}`);
+      return;
+    }
+    markMessageProcessed(msgId);
   } else if (msgType === 'new_guest_message') {
     from = 'guest';
     fromName = '访客';
     body = message.content || '';
   } else if (msgType === 'sync_response') {
     const messages = message.messages || [];
+    ctx.log?.info?.(`[${account.accountId}] sync_response: ${messages.length} messages`);
     for (const msg of messages) {
+      // 检查是否已处理（去重）
+      const msgId = msg.id || msg.message_id || `${msg.from}-${msg.content}-${msg.timestamp}`;
+      if (isMessageProcessed(msgId)) {
+        ctx.log?.info?.(`[${account.accountId}] duplicate message skipped: ${msgId}`);
+        continue;
+      }
+      markMessageProcessed(msgId);
       await handleMessage({ type: 'new_message', ...msg }, account, channelRuntime, {
         log: ctx.log,
         cfg: ctx.cfg,
@@ -210,9 +266,20 @@ async function handleMessage(
 
     ctx.log?.info?.(`[${account.accountId}] route: agent=${route.agentId}, session=${route.sessionKey}`);
 
-    // 2. 构建 MsgContext
+    // 2. 构建消息来源标记
+    let senderPrefix = '';
+    if (from === 'owner') {
+      senderPrefix = '[主人消息]';
+    } else if (from === 'guest') {
+      senderPrefix = '[访客消息]';
+    } else {
+      senderPrefix = `[联系人: ${fromName}${from && from !== fromName ? ' (ID: ' + from + ')' : ''}]`;
+    }
+    const markedBody = `${senderPrefix}\n\n${body}`;
+
+    // 3. 构建 MsgContext
     const msgContext: any = {
-      Body: body,
+      Body: markedBody,
       From: from,
       To: 'owner',
       AccountId: account.accountId,
@@ -226,15 +293,15 @@ async function handleMessage(
     // 关键：设置 SessionKey 让 dispatchReplyFromConfig 使用正确的 session
     msgContext.SessionKey = route.sessionKey;
 
-    // 3. 完成入站上下文
+    // 4. 完成入站上下文
     const finalized = channelRuntime.reply.finalizeInboundContext(msgContext);
 
-    // 4. 解析 storePath
+    // 5. 解析 storePath
     const storePath = channelRuntime.session.resolveStorePath(ctx.cfg?.session?.store, {
       agentId: route.agentId,
     });
 
-    // 5. 记录入站会话
+    // 6. 记录入站会话
     await channelRuntime.session.recordInboundSession({
       storePath,
       sessionKey: route.sessionKey,
@@ -250,29 +317,55 @@ async function handleMessage(
 
     ctx.log?.info?.(`[${account.accountId}] message recorded, dispatching reply...`);
 
-    // 6. 触发 AI 回复
-    await channelRuntime.reply.dispatchReplyFromConfig({
-      ctx: finalized,
-      cfg: ctx.cfg,
-      dispatcher: {
-        deliver: async (payload: any) => {
-          ctx.log?.info?.(`[${account.accountId}] delivering reply: ${payload.text?.substring(0, 50)}...`);
-          // 发送回复到 Portal
-          try {
-            const response = await fetch(`${account.hubUrl}/api/chat/owner/reply`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content: payload.text }),
-            });
-            if (!response.ok) {
-              ctx.log?.error?.(`[${account.accountId}] deliver failed: ${response.status}`);
-            }
-          } catch (err: any) {
-            ctx.log?.error?.(`[${account.accountId}] deliver error: ${err.message}`);
+    // 6. 触发 AI 回复（使用 createReplyDispatcherWithTyping）
+    ctx.log?.info?.(`[${account.accountId}] dispatchReplyFromConfig called, session=${route.sessionKey}`);
+    
+    // 使用 OpenClaw 提供的工厂方法创建 dispatcher
+    const { dispatcher, replyOptions, markDispatchIdle } = channelRuntime.reply.createReplyDispatcherWithTyping({
+      humanDelay: 0,
+      typingCallbacks: undefined,
+      deliver: async (payload: any) => {
+        ctx.log?.info?.(`[${account.accountId}] deliver callback triggered, payload type: ${typeof payload}, keys: ${Object.keys(payload || {})}`);
+        const textToSend = payload.text || payload.content || payload.message || JSON.stringify(payload);
+        ctx.log?.info?.(`[${account.accountId}] delivering reply: ${textToSend?.substring(0, 50)}...`);
+        // 发送回复到 Portal
+        try {
+          const response = await fetch(`${account.hubUrl}/api/chat/owner/reply`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: textToSend }),
+          });
+          const responseText = await response.text();
+          ctx.log?.info?.(`[${account.accountId}] deliver response: ${response.status} - ${responseText}`);
+          if (!response.ok) {
+            ctx.log?.error?.(`[${account.accountId}] deliver failed: ${response.status}`);
           }
-        },
+        } catch (err: any) {
+          ctx.log?.error?.(`[${account.accountId}] deliver error: ${err.message}`);
+        }
       },
     });
+
+    const replyPromise = channelRuntime.reply.withReplyDispatcher({
+      dispatcher,
+      run: () => channelRuntime.reply.dispatchReplyFromConfig({
+        ctx: finalized,
+        cfg: ctx.cfg,
+        dispatcher,
+        replyOptions,
+      }),
+    });
+
+    // 添加超时，防止 AI 回复卡住
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('AI reply timeout (30s)')), 30000);
+    });
+
+    try {
+      await Promise.race([replyPromise, timeoutPromise]);
+    } catch (err: any) {
+      ctx.log?.error?.(`[${account.accountId}] reply dispatch error: ${err.message}`);
+    }
 
     ctx.log?.info?.(`[${account.accountId}] reply dispatched`);
 
@@ -285,12 +378,13 @@ async function handleMessage(
 function scheduleReconnect(
   account: P2pPortalAccount,
   runtime: P2pPortalRuntime,
-  ctx: { log?: { info?: (msg: string) => void }; setStatus?: (status: { accountId: string; running: boolean }) => void }
+  channelRuntime: any,
+  ctx: { log?: { info?: (msg: string) => void; error?: (msg: string) => void }; setStatus?: (status: { accountId: string; running: boolean }) => void; abortSignal?: AbortSignal; cfg?: OpenClawConfig }
 ): void {
   ctx.log?.info?.(`[${account.accountId}] reconnecting in ${runtime.reconnectDelay / 1000}s...`);
   setTimeout(() => {
     if (runtime.running && !runtime.ws) {
-      startConnection(account, runtime, ctx);
+      startConnection(account, runtime, channelRuntime, ctx);
     }
     runtime.reconnectDelay = Math.min(runtime.reconnectDelay * 2, 60000);
   }, runtime.reconnectDelay);

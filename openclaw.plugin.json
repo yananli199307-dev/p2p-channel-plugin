@@ -3,7 +3,7 @@
   "name": "Agent P2P Portal",
   "description": "WebSocket connection to P2P Portal for agent-to-agent messaging",
   "version": "0.2.0",
-  "specifier": "./index.js",
+  "specifier": "./index.ts",
   "exportName": "default",
   "channels": [
     "p2p-portal"

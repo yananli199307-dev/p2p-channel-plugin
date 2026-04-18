@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { p2pPortalPlugin, setP2pPortalRuntime } from "./channel.js";
+import { p2pPortalPlugin, setP2pPortalRuntime } from "./channel";
 
 const plugin = {
   id: "p2p-portal",
