@@ -341,10 +341,10 @@ async function handleMessage(
         ctx.log?.info?.(`[${account.accountId}] delivering reply: ${textToSend?.substring(0, 50)}...`);
         // 发送回复到 Portal
         try {
-          const response = await fetch(`${account.hubUrl}/api/chat/owner/reply`, {
+          const response = await fetch(`${account.hubUrl}/api/internal/agent-reply`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: textToSend }),
+            body: JSON.stringify({ content: textToSend, user_id: 1 }),
           });
           const responseText = await response.text();
           ctx.log?.info?.(`[${account.accountId}] deliver response: ${response.status} - ${responseText}`);
@@ -455,10 +455,10 @@ export const p2pPortalPlugin: ChannelPlugin<P2pPortalAccount, P2pPortalRuntime> 
       ctx.log?.info?.(`[${ctx.accountId}] sendText: ${text.substring(0, 50)}...`);
       
       try {
-        const response = await fetch(`${account.hubUrl}/api/chat/owner/reply`, {
+        const response = await fetch(`${account.hubUrl}/api/internal/agent-reply`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: text }),
+          body: JSON.stringify({ content: text, user_id: 1 }),
         });
         
         if (response.ok) {
