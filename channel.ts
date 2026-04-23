@@ -218,6 +218,17 @@ async function handleMessage(
       return;
     }
     markMessageProcessed(msgId);
+  } else if (msgType === 'agent_message') {
+    from = 'owner';
+    fromName = '主人';
+    body = message.content || '';
+    // agent_message 需要去重
+    const msgId = message.id || message.message_id || `agent-${body}-${message.timestamp || Date.now()}`;
+    if (isMessageProcessed(msgId)) {
+      ctx.log?.info?.(`[${account.accountId}] duplicate agent_message skipped: ${msgId}`);
+      return;
+    }
+    markMessageProcessed(msgId);
   } else if (msgType === 'new_guest_message') {
     from = 'guest';
     fromName = '访客';
